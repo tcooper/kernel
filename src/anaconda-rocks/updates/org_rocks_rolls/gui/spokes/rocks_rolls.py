@@ -45,10 +45,11 @@ import thread
 
 
 
-STATUSMSG = ["%d Rolls Selected", "Please Select Required Rolls ", "Hostname='localhost'. Please Change it"]
+STATUSMSG = ["%d Rolls Selected", "Please Select Required Rolls ", "Hostname='localhost'. Please Change it", "Building Database, Please Wait"]
 COMPLETE = 0
 CONFIGURE = 1
 BADHOSTNAME = 2
+BUILDING = 3
 
 ## Defines for Roll Source
 NETWORK = 0
@@ -114,9 +115,14 @@ class RocksRollsSpoke(NormalSpoke):
         """
 
         NormalSpoke.__init__(self, data, storage, payload, instclass)
-        self.clientInstall = RocksEnv.RocksEnv().clientInstall
+        r = RocksEnv.RocksEnv()
+        self.clientInstall = r.clientInstall
 
-        self.defaultUrl ="http://beta6.rocksclusters.org/install/rolls"
+        self.defaultCentral ="beta7.rocksclusters.org"
+        if r.central is not None:
+            self.defaultCentral = r.central
+        self.defaultUrl ="http://%s/install/rolls" % self.defaultCentral
+
         self.defaultCDPath = "/run/install/repo"
 
         self.selectAll = True
@@ -125,7 +131,6 @@ class RocksRollsSpoke(NormalSpoke):
         self.requireDB = True
 
         self.requiredRolls = ('core','base','kernel')
-
 
     def initialize(self):
         """
@@ -221,16 +226,19 @@ class RocksRollsSpoke(NormalSpoke):
 
         # Check if the hostname starts with "localhost"
         # if
-	myHostname = subprocess.check_output(['hostname','-s']).strip()
+        myHostname = subprocess.check_output(['hostname','-s']).strip()
         if myHostname.startswith("localhost"):
             self.readyState=BADHOSTNAME
             return False
         # if the readyState was BADHOSTNAME return to CONFIGURE state
-	# send a message to Hub that we are now ready (only way to
+        # send a message to Hub that we are now ready (only way to
         # to remove this spoke from _notReady list
         if self.readyState == BADHOSTNAME:
             self.readyState = CONFIGURE
             hubQ.send_ready(self.__class__.__name__, True)
+        if self.readyState == BUILDING:
+            self.log.info("rocks_rolls.py:building db (ready)")
+            return False            
         self.log.info("rocks_rolls.py:ready")
         return True
 
@@ -340,7 +348,7 @@ class RocksRollsSpoke(NormalSpoke):
 
         #
         # if this is a CD-based roll, then mount the disk
-	# just read from a local path
+        # just read from a local path
         #
         if self.rollSource == CD:
             # XXX Fix this to really do mounting in 7 XXX
@@ -363,7 +371,8 @@ class RocksRollsSpoke(NormalSpoke):
         for roll in rollList:
             (name,version,arch,url,diskid) = roll    
             self.listStore.append(row=(False,name,version,arch,url,diskid))
-
+        if len(rollList) == 0:
+            self.listStore.append(row=(False,"NO ROLLS FOUND!","","","",""))
 
     def selectRolls(self,widget):
         selected = filter(lambda x : x[0], self.listStore)
@@ -372,9 +381,10 @@ class RocksRollsSpoke(NormalSpoke):
             for a in self.selectStore:
                 if (a[0],a[1],a[2]) == (name,version,arch):
                     self.selectStore.remove(a.iter)
-            self.selectStore.append((name,version,arch,url,diskid))      
-            self.log.info("ROCKS - Select Rolls %s" % (name,version,arch,url,diskid).__str__()) 
-            self.install.getKickstartFiles((name,version,arch,"%s/" % url,diskid))
+            if len(url) > 0:
+                self.selectStore.append((name,version,arch,url,diskid))      
+                self.log.info("ROCKS - Select Rolls %s" % (name,version,arch,url,diskid).__str__()) 
+                self.install.getKickstartFiles((name,version,arch,"%s/" % url,diskid))
         self.listStore.clear()
 
     def doPopup(self,tview,path,c):
@@ -427,7 +437,7 @@ class RocksRollsSpoke(NormalSpoke):
 
         f.write('</rolls>\n')
         f.close()
-    def builddb(self):
+    def builddb_old(self):
         dialog = Gtk.Dialog("Build Database", parent=self.main_window, flags=0,
             buttons=(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
              Gtk.STOCK_OK, Gtk.ResponseType.OK))
@@ -440,11 +450,23 @@ class RocksRollsSpoke(NormalSpoke):
         thread.start_new_thread(self.buildit,(dialog,))
         #self.buildit(dialog)
 
+
+    def builddb(self):
+        oldReady = self.readyState 
+        self.log.info("rocks_rolls.py:building db (builddb)")
+        self.readyState = BUILDING
+        hubQ.send_ready(self.__class__.__name__, False)
+        self.buildit(None)
+        self.readyState = oldReady
+        self.log.info("rocks_rolls.py: database built (builddb)")
+        hubQ.send_ready(self.__class__.__name__, True)
+
     def buildit(self,dialog):
         cmd = ["/opt/rocks/bin/builddb.sh", "/tmp/rocks"]
         p1 = subprocess.Popen(cmd, stdout=subprocess.PIPE)
         p1.communicate() 
-        dialog.destroy()
+        if dialog is not None:
+            dialog.destroy()
 
 class RocksRollsDialog(GUIObject):
     """

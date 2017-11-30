@@ -53,13 +53,15 @@ __all__ = ["RocksConfigSpoke"]
 
 # File that holds JSON of clusterInfo variables.
 INFOFILE = "infoVars.json"
-FIELDNAMES = ['param','value','varname','infoHelp','required','display','validate', 'color','derived']
+PROFILES = "/tmp/rocks/export/profile"
+FIELDNAMES = ['param','value','varname','infoHelp','required','display','validate', 'color','derived','colorlabel','initialize']
 VARIDX = FIELDNAMES.index("varname")
 VALIDX = FIELDNAMES.index("value")
 VISIDX = FIELDNAMES.index("display")
 COLORIDX = FIELDNAMES.index("color")
 REQUIREDIDX = FIELDNAMES.index("required")
 DERIVEDIDX = FIELDNAMES.index("derived")
+INITIALIZEIDX = FIELDNAMES.index("initialize")
 
 # Field names are:
 #        param: String. Displayed Parameter Text 
@@ -70,14 +72,16 @@ DERIVEDIDX = FIELDNAMES.index("derived")
 #        display: Boolean. Display on the UI 
 #        validate: String.  Validation Method 
 #        color: String.  Color of cell for disply 
-# 
+#        colorlabel: String.  Color of label 
+#        initialize: String.  name of existing attr to initialize this param
 # These fields are mapped into gui's ClusterInfoStore (in RocksInfo.glade).
 # ClusterInfoStore only has indices, so must keep the map of these dictionary 
 # values consistent with their indices in the UI
 
 
 def addRecord(ksdata, varname, value, \
-        param='',infoHelp='',required=False,display=False,validate=None):
+        param='',infoHelp='',required=False,display=False,validate=None,\
+        colorlabel="green"):
     tuple = FIELDNAMES
     tuple[FIELDNAMES.index("param")]=param
     tuple[FIELDNAMES.index("varname")]=varname
@@ -86,6 +90,7 @@ def addRecord(ksdata, varname, value, \
     tuple[FIELDNAMES.index("required")]=required
     tuple[FIELDNAMES.index("display")]=display
     tuple[FIELDNAMES.index("validate")]=validate
+    tuple[FIELDNAMES.index("colorlabel")]=colorlabel
 
     try:
         vars = map(lambda x: x[VARIDX],ksdata.addons.org_rocks_rolls.info)
@@ -201,7 +206,7 @@ class RocksConfigSpoke(NormalSpoke):
         # merge entries into self.data.addons.org_rocks_rolls.info 
         self.merge(jsoninfo)
         self.visited = False
-	self.readyState = True
+        self.readyState = True
         
 
     def refresh(self):
@@ -214,6 +219,7 @@ class RocksConfigSpoke(NormalSpoke):
 
         """
         ### Master of information is rocks_rolls.info structure.
+        self.readRollJSON()
         self.mapAnacondaValues(self.data.addons.org_rocks_rolls.info)
         self.log.info("ROCKS: refresh() info %s" % hex(id(self.data.addons.org_rocks_rolls.info)))
         self.log.info("ROCKS: refresh() info %s" % self.data.addons.org_rocks_rolls.info.__str__())
@@ -308,6 +314,7 @@ class RocksConfigSpoke(NormalSpoke):
             return True
         if self.infoStore is None:
             return False
+        self.readRollJSON()
         required = filter(lambda x: x[4] ,self.data.addons.org_rocks_rolls.info)
         completed = filter(lambda x: x[1] is not None and len(x[1]) > 0, required) 
         self.log.info("ROCKS: completed() required:%d; completed:%d" % (len(required),len(completed)))
@@ -354,7 +361,7 @@ class RocksConfigSpoke(NormalSpoke):
         # not shown. need to adjust path with offset
         target = int(path)
         offset = 0
-        for i in range(0,len(self.infoStore)):	
+        for i in range(0,len(self.infoStore)):
             if not self.infoStore[i][VISIDX]: offset += 1
             if target == 0: break
             if self.infoStore[i][VISIDX]: target -= 1
@@ -381,9 +388,46 @@ class RocksConfigSpoke(NormalSpoke):
         initialParams = [[z[idx] for idx in FIELDNAMES ] for z in allInfo] 
         return initialParams
 
+    def readRollJSON(self):
+        """Read roll JSON files to add attributes.  This needs to be called
+           whenever completed methods or enter methods are invoked"""
+    
+        ## Find all files in PROFILES path that are json
+        allfiles = []
+        candidates = filter(lambda x: x[0].endswith('include/json'), \
+            os.walk(PROFILES))
+        self.log.info("ROCKS: readRollJSON candidates (%s)" % str(candidates))              
+        for line in candidates:
+            files = map(lambda x: os.path.join(line[0],x), line[2])  
+            if len(files) > 0:
+                allfiles.extend(files)
+        ## allfiles has the full path of all roll json files (if any)
+        ## if any are misformatted, not json, etc. just keep going 
+        self.log.info("ROCKS: readRollJSON allfiles (%s)" % str(allfiles))              
+        for p in allfiles:
+            try:
+                f = open(p)
+                rollInfo = json.load(f)
+                f.close()
+                rollParams = [[z[idx] for idx in FIELDNAMES ] for z in rollInfo] 
+                # Try to initialize params using other attributes.
+                # If no initialize is defined for a particular attr, just
+                # keep trying.
+                for param in rollParams:
+                    try:
+                        param[VALIDX] = getValue(self.data,param[INITIALIZEIDX])
+                    except Exception as e:
+                        self.log.info("ROCKS: readRollJSON param set exception (%s)" % str(e))              
+                self.log.info("ROCKS: readRollJSON rollParams (%s)" % str(rollParams))              
+
+                self.merge(rollParams)
+            except Exception as e:
+                self.log.info("ROCKS: readRollJSON exception (%s)" % str(e))              
+    
     def merge(self, defaultinfo):
         """ merge data from defaultinfo into org_rocks_rolls.info 
-            data struct """
+            data struct, if a varname is already in rolls.info, don't
+            change rolls.info """
 
         try:
             ivars = \
